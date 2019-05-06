@@ -1,0 +1,92 @@
+import os
+import numpy as np
+import pandas as pd
+from math import trunc
+import re
+
+def loadData(filename):
+    """Load csv data: data has informaiton about yield curve at any given day
+    
+    * last line can contain information about the number of observations in data"""
+    
+    # Read csv data from folder, creates variales for discount factor  and implicit yield to  maturity  
+    df = pd.read_csv(filename, index_col = 'fe_publi')
+    df['discount'] = df['precio']/10 # Nominal price is 10 pesos
+    df['yield'] = -100*np.log(df['discount'])/(df['plazo']/360) # Calculate yields from discount curve
+
+    dates = list(df.index); dates = list(dict.fromkeys(dates))
+    date = dates[0]
+    
+    r = re.findall(r'numero', dates[-1].lower())
+    if (r):
+        df = df[:-1]
+
+    return df, date
+    
+def createDataframeMonthlyMaturity():
+    # Dataframe con madureces mensuales [1 month = 30.4375 days]
+    m_month = np.array(list(range(1,121)))
+    m_day = m_month*30.4375
+    m_below = np.array([int(0)]*120)
+    m_above = np.array([int(0)]*120)
+    below = np.array([0.0]*120)
+    above = np.array([0.0]*120)
+    yield_ = np.array([0.0]*120)
+
+    # Crea dataframe
+    monthly_df = pd.DataFrame({'m_month':m_month, 'm_day':m_day, 'm_below':m_below, 
+                        'm_above':m_above, 'below':below, 'above':above, 'yield': yield_})
+    
+    for j in range(len(monthly_df)):
+        # Crea madureces para interpolación
+        if ((j+1)*30.4375) % 1 == 0:
+            monthly_df.iat[j, 2] = (j+1)*30.4375
+            monthly_df.iat[j, 3] = (j+1)*30.4375
+
+        else:
+            monthly_df.iat[j, 2] = trunc((j+1)*30.4375 - 1)
+            monthly_df.iat[j, 3] = trunc((j+1)*30.4375 + 1)
+    
+    return monthly_df
+   
+def getMonthlyYields(monthly_mat_df, daily_mat_df):
+    """Extract yields from daily maturities dataframe 
+    and interpolates to obtain maturities of multiples of 30.4375 days
+    
+    monthly_mat_df: dataframe of length = 120
+    daily_mat_df: dataframe with information of daily maturities"""
+    
+    for j in range(len(monthly_mat_df)):
+
+        # Extrae rendimientos para interpolación
+        below = daily_mat_df['yield'].iloc[monthly_mat_df.iat[j, 2]]
+        monthly_mat_df.iat[j, 4] = below
+
+        above = daily_mat_df['yield'].iloc[monthly_mat_df.iat[j, 3]]
+        monthly_mat_df.iat[j, 5] = above
+
+        # Interpolación
+        if monthly_mat_df['m_below'].loc[j] == monthly_mat_df['m_above'].loc[j]:
+            monthly_mat_df['yield'].loc[j] = monthly_mat_df['below'].loc[j] # Not necessary to interpolate 
+
+        else:
+            x = monthly_mat_df['m_day'].loc[j]
+            x0 = monthly_mat_df['m_below'].loc[j]; x0 = x0.astype(float)
+            x1 = monthly_mat_df['m_above'].loc[j]; x1 = x1.astype(float)
+            y0 = monthly_mat_df['below'].loc[j]
+            y1 = monthly_mat_df['above'].loc[j]        
+
+            monthly_mat_df['yield'].loc[j] = y0 + (x - x0)*(y1-y0)/(x1-x0)
+        
+    monthly_mat_df = monthly_mat_df[['m_month','yield']]
+    monthly_mat_df = monthly_mat_df.set_index('m_month')
+    monthly_mat_df.columns = [date]
+    
+    return monthly_mat_df
+    
+def getYieldCurve(filename):
+    daily, date = loadData(filename)
+    monthly = createDataframeMonthlyMaturity()
+    monthlyYields = getMonthlyYields(monthly, daily)
+    
+    return monthlyYields
